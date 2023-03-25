@@ -1,0 +1,12 @@
+[package]
+name = "rust-eidreader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.21.0"
+cryptoki = { version = "0.4.1",  git = "https://github.com/parallaxsecond/rust-cryptoki"}
+cryptoki-sys = "0.1.5"
+rocket = "0.5.0-rc.2"
+serde = "1.0.158"
+serde_json = "1.0.94"
