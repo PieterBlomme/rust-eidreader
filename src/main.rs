@@ -79,7 +79,10 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         return Err(NotFound(String::from("Geen eID ingevoerd.")))
     };
     let slot = slots.remove(0);
-    let session = pkcs11.open_ro_session(slot).unwrap();
+    let session = match pkcs11.open_ro_session(slot){
+        Ok(session) => session,
+        Err(session) => return Err(NotFound(String::from("Ongeldige eID ingevoerd (Kids ID?).")))
+    };
 
     // pub key template
     let pub_key_template = vec![Attribute::Class(ObjectClass::DATA)];
