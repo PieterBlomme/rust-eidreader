@@ -74,14 +74,14 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     // find a slot, get the first one
     let mut slots = pkcs11.get_slots_with_token().unwrap();
 
-    if (slots.is_empty())
+    if slots.is_empty()
     {
         return Err(NotFound(String::from("Geen eID ingevoerd.")))
     };
     let slot = slots.remove(0);
     let session = match pkcs11.open_ro_session(slot){
         Ok(session) => session,
-        Err(session) => return Err(NotFound(String::from("Ongeldige eID ingevoerd (Kids ID?).")))
+        Err(_session) => return Err(NotFound(String::from("Ongeldige eID ingevoerd (Kids ID?).")))
     };
 
     // pub key template
@@ -174,7 +174,12 @@ fn get_healthz() -> content::RawJson<&'static str> {
 
 #[launch]
 fn rocket() -> _ {
-    rocket::build()
+    let figment = rocket::Config::figment()
+    .merge(("port", 8099))
+    .merge(("address", "0.0.0.0"))
+    .merge(("log_level", "debug"));
+
+    rocket::custom(figment)
         .mount("/", routes![get_eid, get_healthz])
         .attach(CORS)
 }
