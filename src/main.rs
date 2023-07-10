@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate rocket;
+extern crate os_type;
 
 use base64;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
@@ -7,12 +8,12 @@ use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use rocket::response::content;
+use rocket::response::status::NotFound;
 use rocket::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::str;
-use rocket::response::status::NotFound;
 
 pub struct CORS;
 
@@ -61,11 +62,20 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         "national_number",
         "PHOTO_FILE",
     ];
-    let mut pkcs11 = Pkcs11::new(
-        env::var("PKCS11_SOFTHSM2_MODULE")
-            .unwrap_or_else(|_| r"C:\\Windows\System32\beidpkcs11.dll".to_string()),
-    )
-    .unwrap();
+
+    let mut pkcs11 = match os_type::current_platform().os_type {
+        os_type::OSType::Ubuntu => Pkcs11::new(
+            env::var("PKCS11_SOFTHSM2_MODULE")
+                .unwrap_or_else(|_| r"/usr/lib/x86_64-linux-gnu/libbeidpkcs11.so.0".to_string()),
+        )
+        .unwrap(),
+        _ => Pkcs11::new(
+            env::var("PKCS11_SOFTHSM2_MODULE")
+                .unwrap_or_else(|_| r"C:\\Windows\System32\beidpkcs11.dll".to_string()),
+        )
+        .unwrap(),
+    };
+
     // initialize the library
     if !pkcs11.is_initialized() {
         pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
@@ -74,14 +84,17 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     // find a slot, get the first one
     let mut slots = pkcs11.get_slots_with_token().unwrap();
 
-    if slots.is_empty()
-    {
-        return Err(NotFound(String::from("Geen eID ingevoerd.")))
+    if slots.is_empty() {
+        return Err(NotFound(String::from("Geen eID ingevoerd.")));
     };
     let slot = slots.remove(0);
-    let session = match pkcs11.open_ro_session(slot){
+    let session = match pkcs11.open_ro_session(slot) {
         Ok(session) => session,
-        Err(_session) => return Err(NotFound(String::from("Ongeldige eID of eID niet correct ingevoerd.")))
+        Err(_session) => {
+            return Err(NotFound(String::from(
+                "Ongeldige eID of eID niet correct ingevoerd.",
+            )))
+        }
     };
 
     // pub key template
@@ -175,9 +188,9 @@ fn get_healthz() -> content::RawJson<&'static str> {
 #[launch]
 fn rocket() -> _ {
     let figment = rocket::Config::figment()
-    .merge(("port", 8099))
-    .merge(("address", "0.0.0.0"))
-    .merge(("log_level", "debug"));
+        .merge(("port", 8099))
+        .merge(("address", "0.0.0.0"))
+        .merge(("log_level", "debug"));
 
     rocket::custom(figment)
         .mount("/", routes![get_eid, get_healthz])
