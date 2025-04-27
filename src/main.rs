@@ -2,9 +2,11 @@
 extern crate rocket;
 extern crate os_type;
 
-use base64;
+use base64::{engine::general_purpose, Engine as _};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
+use cryptoki::session::{Session};
+use cryptoki::mechanism::Mechanism;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use rocket::response::content;
@@ -50,19 +52,14 @@ struct Person {
     photo: String,
 }
 
-fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
-    let attrs_to_fetch = [
-        "address_municipality",
-        "address_street_and_number",
-        "address_zip",
-        "gender",
-        "date_of_birth",
-        "firstnames",
-        "surname",
-        "national_number",
-        "PHOTO_FILE",
-    ];
 
+#[derive(Serialize, Deserialize, Debug)]
+struct InputToSign {
+    data: String,
+}
+
+
+fn get_pkcs11() -> Pkcs11 {
     let mut pkcs11 = match os_type::current_platform().os_type {
         os_type::OSType::Ubuntu => Pkcs11::new(
             env::var("PKCS11_SOFTHSM2_MODULE")
@@ -80,7 +77,11 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     if !pkcs11.is_initialized() {
         pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
     }
+    pkcs11
+}
 
+fn get_session() -> Result<Session, NotFound<String>> {
+    let pkcs11 = get_pkcs11();
     // find a slot, get the first one
     let mut slots = pkcs11.get_slots_with_token().unwrap();
 
@@ -88,7 +89,31 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         return Err(NotFound(String::from("Geen eID ingevoerd.")));
     };
     let slot = slots.remove(0);
-    let session = match pkcs11.open_ro_session(slot) {
+
+    match pkcs11.open_ro_session(slot) {
+        Ok(session) => return Ok(session),
+        Err(_session) => {
+            return Err(NotFound(String::from(
+                "Ongeldige eID of eID niet correct ingevoerd.",
+            )))
+        }
+    };
+}
+
+fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
+    let attrs_to_fetch = [
+        "address_municipality",
+        "address_street_and_number",
+        "address_zip",
+        "gender",
+        "date_of_birth",
+        "firstnames",
+        "surname",
+        "national_number",
+        "PHOTO_FILE",
+    ];
+    
+    let session = match get_session() {
         Ok(session) => session,
         Err(_session) => {
             return Err(NotFound(String::from(
@@ -124,7 +149,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         }
         if attrs_to_fetch.iter().any(|e| label.contains(e)) {
             if label.contains("PHOTO_FILE") {
-                person_hash.insert(label, base64::encode(content));
+                person_hash.insert(label, general_purpose::STANDARD.encode(content));
             } else {
                 match str::from_utf8(&content) {
                     Ok(v) => person_hash.insert(label, v.to_string()),
@@ -175,9 +200,65 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     Ok(content::RawJson(serde_json::to_string(&person).unwrap()))
 }
 
+
+fn certificate(data_base64: String) -> Result<String, NotFound<String>> {
+
+    let session = match get_session() {
+        Ok(session) => session,
+        Err(_session) => {
+            return Err(NotFound(String::from(
+                "Ongeldige eID of eID niet correct ingevoerd.",
+            )))
+        }
+    };
+
+    // pub key template
+    let pub_key_template = vec![Attribute::Class(ObjectClass::PRIVATE_KEY)];
+
+    let pub_attribs = vec![AttributeType::Label, AttributeType::Value];
+
+    let obj_handles = session.find_objects(&pub_key_template).unwrap();
+
+    for obj_handle in obj_handles {
+        let attributes = session
+            .get_attributes(obj_handle, &pub_attribs.clone())
+            .unwrap();
+        for attr in attributes {
+            if let Attribute::Label(value) = attr {
+                let label = match str::from_utf8(&value) {
+                    Ok(v) => v.to_string(),
+                    Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
+                };
+                if label == "Signature"{
+                    let data_bytes = general_purpose::STANDARD.decode(data_base64).unwrap();
+                    let signed_result = match session.sign(
+                        &Mechanism::Sha256RsaPkcs,
+                        obj_handle,
+                        &data_bytes
+                    ){
+                        Ok(v) => v,
+                        Err(e) => panic!("Problem while signing: {}", e),
+                    };
+                    return Ok(general_purpose::STANDARD.encode(signed_result))
+                }
+            }
+        }
+    }
+    
+    Err(NotFound(String::from(
+        "Versleutelen van data niet gelukt.",
+    )))
+
+}
+
 #[get("/eid")]
 fn get_eid() -> Result<content::RawJson<String>, NotFound<String>> {
     eid()
+}
+
+#[post("/certificate", format = "json", data = "<data>")]
+fn get_certificate(data: rocket::serde::json::Json<InputToSign>) -> Result<String, NotFound<String>> {
+    certificate(data.data.clone())
 }
 
 #[get("/healthz")]
@@ -193,6 +274,7 @@ fn rocket() -> _ {
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
-        .mount("/", routes![get_eid, get_healthz])
+        .mount("/", routes![get_eid, get_healthz, get_certificate])
         .attach(CORS)
 }
+
