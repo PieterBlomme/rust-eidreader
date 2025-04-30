@@ -16,6 +16,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::str;
+use j4rs::prelude::*;
+use j4rs::Instance;
+use j4rs::Jvm;
+use j4rs::JvmBuilder;
+use j4rs::InvocationArg;
+use j4rs::ClasspathEntry;
+use std::sync::Once;
 
 pub struct CORS;
 
@@ -58,6 +65,28 @@ struct InputToSign {
     data: String,
 }
 
+static INIT_JVM: Once = Once::new();
+static mut JVM: Option<Jvm> = None;
+
+fn get_jvm() -> &'static Jvm {
+    unsafe {
+        INIT_JVM.call_once(|| {
+            let jvm = JvmBuilder::new()
+                .classpath_entry(ClasspathEntry::new("target/classes"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/bcprov-jdk18on-1.77.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/bcpkix-jdk18on-1.77.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-jca-1.2.0.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-client-1.2.0.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-dialogs-1.2.0.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/slf4j-api-2.0.12.jar"))
+                .classpath_entry(ClasspathEntry::new("target/dependency/slf4j-simple-2.0.12.jar"))
+                .build()
+                .unwrap();
+            JVM = Some(jvm);
+        });
+        JVM.as_ref().unwrap()
+    }
+}
 
 fn get_pkcs11() -> Pkcs11 {
     let pkcs11 = match os_type::current_platform().os_type {
@@ -265,6 +294,43 @@ fn get_certificate(data: rocket::serde::json::Json<InputToSign>) -> Result<Strin
     certificate(data.data.clone())
 }
 
+#[post("/certificate_v2", format = "json", data = "<data>")]
+fn get_certificate_v2(data: rocket::serde::json::Json<InputToSign>) -> Result<String, NotFound<String>> {
+    let jvm = get_jvm();
+    
+    // Convert the input string to base64
+    let input_base64 = general_purpose::STANDARD.encode(data.data.as_bytes());
+    
+    // Create separate byte arrays for each parameter
+    let dummy_bytes = vec![0u8; 1];
+    let create_byte_array = |bytes: &[u8]| {
+        jvm.create_java_array("byte", &bytes.iter()
+            .map(|&b| {
+                let byte = b as i8;
+                InvocationArg::new(&byte, "byte")
+            })
+            .collect::<Vec<_>>()).unwrap()
+    };
+    
+    // Call the Java method
+    let instance = jvm.invoke_static(
+        "com.example.CMSEncoder",
+        "signData",
+        &[
+            InvocationArg::new(&input_base64, "java.lang.String"),
+            create_byte_array(&dummy_bytes).into(),
+            create_byte_array(&dummy_bytes).into(),
+            create_byte_array(&dummy_bytes).into(),
+            InvocationArg::new(&"BC", "java.lang.String"),
+        ],
+    ).unwrap();
+    
+    // Get the result as a String
+    let result: String = jvm.to_rust(instance).unwrap();
+    
+    Ok(result)
+}
+
 #[get("/healthz")]
 fn get_healthz() -> content::RawJson<&'static str> {
     content::RawJson("{\"online\":true}")
@@ -278,7 +344,7 @@ fn rocket() -> _ {
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
-        .mount("/", routes![get_eid, get_healthz, get_certificate])
+        .mount("/", routes![get_eid, get_healthz, get_certificate, get_certificate_v2])
         .attach(CORS)
 }
 
