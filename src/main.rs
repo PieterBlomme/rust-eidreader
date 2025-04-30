@@ -3,6 +3,7 @@ extern crate rocket;
 extern crate os_type;
 
 use base64::{engine::general_purpose, Engine as _};
+use clap::Parser;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
 use cryptoki::session::Session;
@@ -36,6 +37,14 @@ impl Fairing for CORS {
         response.set_header(Header::new("Access-Control-Allow-Headers", "*"));
         response.set_header(Header::new("Access-Control-Allow-Credentials", "true"));
     }
+}
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Address to listen on
+    #[arg(long, default_value = "127.0.0.1")]
+    address: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -250,9 +259,11 @@ fn get_healthz() -> content::RawJson<&'static str> {
 
 #[launch]
 fn rocket() -> _ {
+    let args = Args::parse();
+    
     let figment = rocket::Config::figment()
         .merge(("port", 8099))
-        .merge(("address", "0.0.0.0"))
+        .merge(("address", args.address))
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
