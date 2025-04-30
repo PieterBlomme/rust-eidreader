@@ -201,7 +201,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
 }
 
 
-fn certificate(data_base64: String) -> Result<String, NotFound<String>> {
+fn certificate(data: String) -> Result<String, NotFound<String>> {
 
     let session = match get_session() {
         Ok(session) => session,
@@ -230,11 +230,10 @@ fn certificate(data_base64: String) -> Result<String, NotFound<String>> {
                     Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
                 };
                 if label == "Signature"{
-                    let data_bytes = general_purpose::STANDARD.decode(data_base64).unwrap();
                     let signed_result = match session.sign(
                         &Mechanism::Sha256RsaPkcs,
                         obj_handle,
-                        &data_bytes
+                        &data.into_bytes()
                     ){
                         Ok(v) => v,
                         Err(e) => panic!("Problem while signing: {}", e),
