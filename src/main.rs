@@ -5,8 +5,7 @@ extern crate os_type;
 use base64::{engine::general_purpose, Engine as _};
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
-use cryptoki::session::{Session};
-use cryptoki::mechanism::Mechanism;
+use cryptoki::session::Session;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use rocket::response::content;
@@ -16,13 +15,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::str;
-use j4rs::prelude::*;
-use j4rs::Instance;
-use j4rs::Jvm;
-use j4rs::JvmBuilder;
-use j4rs::InvocationArg;
-use j4rs::ClasspathEntry;
-use std::sync::Once;
 
 pub struct CORS;
 
@@ -59,33 +51,9 @@ struct Person {
     photo: String,
 }
 
-
 #[derive(Serialize, Deserialize, Debug)]
 struct InputToSign {
     data: String,
-}
-
-static INIT_JVM: Once = Once::new();
-static mut JVM: Option<Jvm> = None;
-
-fn get_jvm() -> &'static Jvm {
-    unsafe {
-        INIT_JVM.call_once(|| {
-            let jvm = JvmBuilder::new()
-                .classpath_entry(ClasspathEntry::new("target/classes"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/bcprov-jdk18on-1.77.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/bcpkix-jdk18on-1.77.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-jca-1.2.0.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-client-1.2.0.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/commons-eid-dialogs-1.2.0.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/slf4j-api-2.0.12.jar"))
-                .classpath_entry(ClasspathEntry::new("target/dependency/slf4j-simple-2.0.12.jar"))
-                .build()
-                .unwrap();
-            JVM = Some(jvm);
-        });
-        JVM.as_ref().unwrap()
-    }
 }
 
 fn get_pkcs11() -> Pkcs11 {
@@ -95,11 +63,12 @@ fn get_pkcs11() -> Pkcs11 {
                 .unwrap_or_else(|_| r"/usr/lib/x86_64-linux-gnu/libbeidpkcs11.so.0".to_string()),
         )
         .unwrap(),
-        os_type::OSType::OSX => Pkcs11::new(
-            env::var("PKCS11_SOFTHSM2_MODULE")
-                .unwrap_or_else(|_| r"/Library/Belgium Identity Card/Pkcs11/libbeidpkcs11.dylib".to_string()),
-        )
-        .unwrap(),
+        os_type::OSType::OSX => {
+            Pkcs11::new(env::var("PKCS11_SOFTHSM2_MODULE").unwrap_or_else(|_| {
+                r"/Library/Belgium Identity Card/Pkcs11/libbeidpkcs11.dylib".to_string()
+            }))
+            .unwrap()
+        }
         _ => Pkcs11::new(
             env::var("PKCS11_SOFTHSM2_MODULE")
                 .unwrap_or_else(|_| r"C:\\Windows\System32\beidpkcs11.dll".to_string()),
@@ -146,7 +115,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         "national_number",
         "PHOTO_FILE",
     ];
-    
+
     let session = match get_session() {
         Ok(session) => session,
         Err(_session) => {
@@ -234,101 +203,44 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     Ok(content::RawJson(serde_json::to_string(&person).unwrap()))
 }
 
-
-fn certificate(data: String) -> Result<String, NotFound<String>> {
-
-    let session = match get_session() {
-        Ok(session) => session,
-        Err(_session) => {
-            return Err(NotFound(String::from(
-                "Ongeldige eID of eID niet correct ingevoerd.",
-            )))
-        }
-    };
-
-    // pub key template
-    let pub_key_template = vec![Attribute::Class(ObjectClass::PRIVATE_KEY)];
-
-    let pub_attribs = vec![AttributeType::Label, AttributeType::Value];
-
-    let obj_handles = session.find_objects(&pub_key_template).unwrap();
-
-    for obj_handle in obj_handles {
-        let attributes = session
-            .get_attributes(obj_handle, &pub_attribs.clone())
-            .unwrap();
-        for attr in attributes {
-            if let Attribute::Label(value) = attr {
-                let label = match str::from_utf8(&value) {
-                    Ok(v) => v.to_string(),
-                    Err(e) => panic!("Invalid UTF-8 sequence: {}", e),
-                };
-                if label == "Signature"{
-                    let signed_result = match session.sign(
-                        &Mechanism::Sha256RsaPkcs,
-                        obj_handle,
-                        &data.into_bytes()
-                    ){
-                        Ok(v) => v,
-                        Err(e) => panic!("Problem while signing: {}", e),
-                    };
-                    return Ok(general_purpose::STANDARD.encode(signed_result))
-                }
-            }
-        }
-    }
-    
-    Err(NotFound(String::from(
-        "Versleutelen van data niet gelukt.",
-    )))
-
-}
-
 #[get("/eid")]
 fn get_eid() -> Result<content::RawJson<String>, NotFound<String>> {
     eid()
 }
 
 #[post("/certificate", format = "json", data = "<data>")]
-fn get_certificate(data: rocket::serde::json::Json<InputToSign>) -> Result<String, NotFound<String>> {
-    certificate(data.data.clone())
-}
+fn get_certificate(
+    data: rocket::serde::json::Json<InputToSign>,
+) -> Result<String, NotFound<String>> {
+    println!("Starting certificate_v2 with data: {}", data.data);
 
-#[post("/certificate_v2", format = "json", data = "<data>")]
-fn get_certificate_v2(data: rocket::serde::json::Json<InputToSign>) -> Result<String, NotFound<String>> {
-    let jvm = get_jvm();
-    
-    // Convert the input string to base64
-    let input_base64 = general_purpose::STANDARD.encode(data.data.as_bytes());
-    
-    // Create separate byte arrays for each parameter
-    let dummy_bytes = vec![0u8; 1];
-    let create_byte_array = |bytes: &[u8]| {
-        jvm.create_java_array("byte", &bytes.iter()
-            .map(|&b| {
-                let byte = b as i8;
-                InvocationArg::new(&byte, "byte")
-            })
-            .collect::<Vec<_>>()).unwrap()
-    };
-    
-    // Call the Java method
-    let instance = jvm.invoke_static(
-        "com.example.CMSEncoder",
-        "signData",
-        &[
-            InvocationArg::new(&input_base64, "java.lang.String"),
-            create_byte_array(&dummy_bytes).into(),
-            create_byte_array(&dummy_bytes).into(),
-            create_byte_array(&dummy_bytes).into(),
-            InvocationArg::new(&"BC", "java.lang.String"),
-        ],
-    ).unwrap();
-    
-    // Get the result as a String
-    let result: String = jvm.to_rust(instance).unwrap();
-    
-    Ok(result)
+    // Execute the Java CLI and capture its output
+    let output = std::process::Command::new("mvn")
+        .args([
+            "compile",
+            "exec:java",
+            "-Dexec.mainClass=com.example.CMSEncoderCLI",
+            &format!("-Dexec.args={}", data.data),
+        ])
+        .output()
+        .map_err(|e| NotFound(format!("Failed to execute CLI: {}", e)))?;
+
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        println!("CLI error: {}", error);
+        return Err(NotFound(format!("CLI execution failed: {}", error)));
+    }
+
+    // Extract the signed data between the markers
+    let output_str = String::from_utf8_lossy(&output.stdout);
+    let signed_data = output_str
+        .split("===SIGNED_DATA_START===")
+        .nth(1)
+        .and_then(|s| s.split("===SIGNED_DATA_END===").next())
+        .map(|s| s.trim())
+        .ok_or_else(|| NotFound("Could not find signed data in output".to_string()))?;
+
+    Ok(signed_data.to_string())
 }
 
 #[get("/healthz")]
@@ -344,7 +256,6 @@ fn rocket() -> _ {
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
-        .mount("/", routes![get_eid, get_healthz, get_certificate, get_certificate_v2])
+        .mount("/", routes![get_eid, get_healthz, get_certificate])
         .attach(CORS)
 }
-
