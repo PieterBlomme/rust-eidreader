@@ -60,10 +60,15 @@ struct InputToSign {
 
 
 fn get_pkcs11() -> Pkcs11 {
-    let mut pkcs11 = match os_type::current_platform().os_type {
+    let pkcs11 = match os_type::current_platform().os_type {
         os_type::OSType::Ubuntu => Pkcs11::new(
             env::var("PKCS11_SOFTHSM2_MODULE")
                 .unwrap_or_else(|_| r"/usr/lib/x86_64-linux-gnu/libbeidpkcs11.so.0".to_string()),
+        )
+        .unwrap(),
+        os_type::OSType::OSX => Pkcs11::new(
+            env::var("PKCS11_SOFTHSM2_MODULE")
+                .unwrap_or_else(|_| r"/Library/Belgium Identity Card/Pkcs11/libbeidpkcs11.dylib".to_string()),
         )
         .unwrap(),
         _ => Pkcs11::new(
