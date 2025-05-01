@@ -50,6 +50,7 @@ struct Args {
 #[derive(Serialize, Deserialize, Debug)]
 struct Person {
     national_number: String,
+    card_number: String,
     surname: String,
     firstnames: String,
     date_of_birth: String,
@@ -122,6 +123,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         "firstnames",
         "surname",
         "national_number",
+        "card_number",
         "PHOTO_FILE",
     ];
 
@@ -174,6 +176,10 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     let person = Person {
         national_number: person_hash
             .entry(String::from("national_number"))
+            .or_default()
+            .to_string(),
+        card_number: person_hash
+            .entry(String::from("card_number"))
             .or_default()
             .to_string(),
         surname: person_hash
