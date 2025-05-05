@@ -2,6 +2,16 @@
 extern crate rocket;
 extern crate os_type;
 
+#[cfg(windows)]
+use windows_service::{
+    define_windows_service,
+    service_dispatcher,
+    service::{
+        ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+    },
+    service_control_handler::ServiceControlHandlerFn,
+};
+
 use base64::{engine::general_purpose, Engine as _};
 use clap::Parser;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
@@ -223,44 +233,49 @@ fn get_eid() -> Result<content::RawJson<String>, NotFound<String>> {
     eid()
 }
 
-#[post("/certificate", format = "json", data = "<data>")]
-fn get_certificate(
-    data: rocket::serde::json::Json<InputToSign>,
-) -> Result<String, NotFound<String>> {
-    println!("Starting certificate_v2 with data: {}", data.data);
-
-    // Execute the Java CLI and capture its output
-    let output = std::process::Command::new("mvn")
-        .args([
-            "compile",
-            "exec:java",
-            "-Dexec.mainClass=com.example.CMSEncoderCLI",
-            &format!("-Dexec.args={}", data.data),
-        ])
-        .output()
-        .map_err(|e| NotFound(format!("Failed to execute CLI: {}", e)))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        println!("CLI error: {}", error);
-        return Err(NotFound(format!("CLI execution failed: {}", error)));
-    }
-
-    // Extract the signed data between the markers
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let signed_data = output_str
-        .split("===SIGNED_DATA_START===")
-        .nth(1)
-        .and_then(|s| s.split("===SIGNED_DATA_END===").next())
-        .map(|s| s.trim())
-        .ok_or_else(|| NotFound("Could not find signed data in output".to_string()))?;
-
-    Ok(signed_data.to_string())
-}
-
 #[get("/healthz")]
 fn get_healthz() -> content::RawJson<&'static str> {
     content::RawJson("{\"online\":true}")
+}
+
+#[cfg(windows)]
+fn run_as_background_process() {
+    use std::ffi::OsString;
+    
+    define_windows_service!(ffi_service_main, service_main);
+    
+    fn service_main(_arguments: Vec<OsString>) {
+        let event_handler = move |control_event| -> ServiceControlHandlerFn {
+            match control_event {
+                ServiceControl::Stop => {
+                    // Cleanup and shutdown logic here
+                    ServiceControlHandlerFn::NoError
+                }
+                _ => ServiceControlHandlerFn::NoError,
+            }
+        };
+        
+        let status_handle = service_control_handler::register("eIDReader", event_handler)
+            .unwrap_or_else(|e| panic!("Failed to register service control handler: {}", e));
+        
+        status_handle
+            .set_service_status(ServiceStatus {
+                service_type: ServiceType::OWN_PROCESS,
+                current_state: ServiceState::Running,
+                controls_accepted: ServiceControlAccept::STOP,
+                exit_code: ServiceExitCode::Win32(0),
+                checkpoint: 0,
+                wait_hint: std::time::Duration::default(),
+                process_id: None,
+            })
+            .unwrap();
+
+        // Launch your Rocket server here
+        let _ = rocket();
+    }
+
+    service_dispatcher::start("eIDReader", ffi_service_main)
+        .unwrap_or_else(|e| panic!("Failed to start service: {}", e));
 }
 
 #[launch]
@@ -273,6 +288,6 @@ fn rocket() -> _ {
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
-        .mount("/", routes![get_eid, get_healthz, get_certificate])
+        .mount("/", routes![get_eid, get_healthz])
         .attach(CORS)
 }
