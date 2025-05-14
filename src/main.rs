@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 #[macro_use]
 extern crate rocket;
 extern crate os_type;
@@ -217,41 +219,6 @@ fn get_eid() -> Result<content::RawJson<String>, NotFound<String>> {
     eid()
 }
 
-#[post("/certificate", format = "json", data = "<data>")]
-fn get_certificate(
-    data: rocket::serde::json::Json<InputToSign>,
-) -> Result<String, NotFound<String>> {
-    println!("Starting certificate_v2 with data: {}", data.data);
-
-    // Execute the Java CLI and capture its output
-    let output = std::process::Command::new("mvn")
-        .args([
-            "compile",
-            "exec:java",
-            "-Dexec.mainClass=com.example.CMSEncoderCLI",
-            &format!("-Dexec.args={}", data.data),
-        ])
-        .output()
-        .map_err(|e| NotFound(format!("Failed to execute CLI: {}", e)))?;
-
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
-        println!("CLI error: {}", error);
-        return Err(NotFound(format!("CLI execution failed: {}", error)));
-    }
-
-    // Extract the signed data between the markers
-    let output_str = String::from_utf8_lossy(&output.stdout);
-    let signed_data = output_str
-        .split("===SIGNED_DATA_START===")
-        .nth(1)
-        .and_then(|s| s.split("===SIGNED_DATA_END===").next())
-        .map(|s| s.trim())
-        .ok_or_else(|| NotFound("Could not find signed data in output".to_string()))?;
-
-    Ok(signed_data.to_string())
-}
-
 #[get("/healthz")]
 fn get_healthz() -> content::RawJson<&'static str> {
     content::RawJson("{\"online\":true}")
@@ -267,6 +234,6 @@ fn rocket() -> _ {
         .merge(("log_level", "debug"));
 
     rocket::custom(figment)
-        .mount("/", routes![get_eid, get_healthz, get_certificate])
+        .mount("/", routes![get_eid, get_healthz])
         .attach(CORS)
 }
