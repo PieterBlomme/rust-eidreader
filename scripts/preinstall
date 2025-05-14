@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# Stop the service if it's running
+launchctl unload ~/Library/LaunchAgents/com.example.EIDReader.plist 2>/dev/null || true 

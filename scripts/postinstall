@@ -1,0 +1,30 @@
+#!/bin/bash
+echo "Running postinstall script..." >&2
+if [ -f "/Applications/EIDReader" ]; then
+  chmod 755 "/Applications/EIDReader"
+  echo "Set permissions on /Applications/EIDReader" >&2
+else
+  echo "File /Applications/EIDReader not found!" >&2
+  exit 1
+fi
+
+# Get the current user's home directory
+CURRENT_USER=$(/usr/bin/stat -f%Su /dev/console)
+USER_HOME=$(/usr/bin/dscl . -read /Users/$CURRENT_USER NFSHomeDirectory | sed 's/^[^:]*: //')
+
+# Create LaunchAgents directory if it doesn't exist
+mkdir -p "$USER_HOME/Library/LaunchAgents"
+
+# Set proper ownership for the application
+chown -R root:wheel "/Applications/EIDReader.app"
+chmod -R 755 "/Applications/EIDReader.app"
+chmod 755 "/Applications/EIDReader.app/Contents/MacOS/EIDReader"
+
+# Copy and load the launch agent
+cp "/Applications/EIDReader.app/Contents/Resources/com.example.EIDReader.plist" "$USER_HOME/Library/LaunchAgents/"
+chown "$CURRENT_USER:staff" "$USER_HOME/Library/LaunchAgents/com.example.EIDReader.plist"
+chmod 644 "$USER_HOME/Library/LaunchAgents/com.example.EIDReader.plist"
+
+# Load the launch agent as the current user
+sudo -u "$CURRENT_USER" launchctl unload "$USER_HOME/Library/LaunchAgents/com.example.EIDReader.plist" 2>/dev/null || true
+sudo -u "$CURRENT_USER" launchctl load "$USER_HOME/Library/LaunchAgents/com.example.EIDReader.plist" 
