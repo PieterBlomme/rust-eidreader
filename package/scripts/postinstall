@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# Enable error logging and exit on error
+set -ex
+
+# Create log file
+LOG_FILE="/tmp/eidreader_install.log"
+exec 1> >(tee -a "$LOG_FILE")
+exec 2> >(tee -a "$LOG_FILE" >&2)
+
+echo "Starting postinstall script at $(date)" >&2
+
+# Function to log messages
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >&2
+}
+
+# Function to check if a file exists
+check_file() {
+    if [ ! -f "$1" ]; then
+        log "ERROR: File not found: $1"
+        log "Directory contents:"
+        ls -la "$(dirname "$1")" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Print environment information
+log "Environment information:"
+log "Current user: $(whoami)"
+log "Current directory: $(pwd)"
+log "PATH: $PATH"
+
+# List contents of /usr/local/bin
+log "Contents of /usr/local/bin:"
+ls -la /usr/local/bin >&2
+
+# List contents of /usr/local/share/eidreader
+log "Contents of /usr/local/share/eidreader:"
+ls -la /usr/local/share/eidreader >&2
+
+# Check if files exist before setting permissions
+log "Checking if required files exist..."
+check_file "/usr/local/bin/EIDReader" || { log "ERROR: Binary not found"; exit 1; }
+check_file "/usr/local/bin/eidreader-setup-user-service" || { log "ERROR: Helper script not found"; exit 1; }
+check_file "/usr/local/share/eidreader/com.example.EIDReader.plist" || { log "ERROR: Plist not found"; exit 1; }
+
+# Check for TLS certificates (optional)
+if [ -f "/usr/local/share/eidreader/localhost.pem" ] && [ -f "/usr/local/share/eidreader/localhost-key.pem" ]; then
+    log "TLS certificates found - will configure HTTPS"
+else
+    log "No TLS certificates found - will run HTTP only"
+fi
+
+# Set permissions
+log "Setting permissions..."
+chmod 755 "/usr/local/bin/EIDReader" || { log "ERROR: Failed to set permissions on binary"; exit 1; }
+chmod 755 "/usr/local/bin/eidreader-setup-user-service" || { log "ERROR: Failed to set permissions on helper script"; exit 1; }
+chmod 644 "/usr/local/share/eidreader/com.example.EIDReader.plist" || { log "ERROR: Failed to set permissions on plist"; exit 1; }
+
+# If TLS certs were dropped into system location, set safe perms
+if [ -f "/usr/local/share/eidreader/localhost.pem" ] && [ -f "/usr/local/share/eidreader/localhost-key.pem" ]; then
+  log "Setting permissions on TLS certs..."
+  chmod 644 "/usr/local/share/eidreader/localhost.pem"
+  chmod 600 "/usr/local/share/eidreader/localhost-key.pem"
+  # Make them readable by all users (needed for LaunchAgent)
+  chmod 644 "/usr/local/share/eidreader/localhost-key.pem"
+fi
+
+# Set ownership
+log "Setting ownership..."
+chown root:wheel "/usr/local/bin/EIDReader" || { log "ERROR: Failed to set ownership on binary"; exit 1; }
+chown root:wheel "/usr/local/bin/eidreader-setup-user-service" || { log "ERROR: Failed to set ownership on helper script"; exit 1; }
+chown root:wheel "/usr/local/share/eidreader/com.example.EIDReader.plist" || { log "ERROR: Failed to set ownership on plist"; exit 1; }
+
+# Ensure ownership for TLS certs if present
+if [ -f "/usr/local/share/eidreader/localhost.pem" ] && [ -f "/usr/local/share/eidreader/localhost-key.pem" ]; then
+  chown root:wheel "/usr/local/share/eidreader/localhost.pem"
+  chown root:wheel "/usr/local/share/eidreader/localhost-key.pem"
+fi
+
+log "Installation completed successfully!"
+echo "EIDReader has been installed successfully!"
+echo ""
+echo "To set up the service for your user account, run:"
+echo "  eidreader-setup-user-service"
+echo ""
+echo "If you need to install TLS dependencies (mkcert, nss), run:"
+echo "  eidreader-install-deps"
+echo ""
+echo "Installation log available at: $LOG_FILE"

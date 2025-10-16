@@ -1,6 +1,6 @@
 [package]
 name = "rust-eidreader"
-version = "0.1.0"
+version = "0.1.4"
 edition = "2021"
 
 [dependencies]
@@ -14,7 +14,7 @@ clap = { version = "4.5.3", features = ["derive"] }
 
 [dependencies.rocket]
 version = "0.5.0-rc.2"
-features = ["json"]
+features = ["json", "tls"]
 
 [[bin]]
 name = "EIDReader"
