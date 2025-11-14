@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "rust-eidreader"
-version = "0.1.4"
+version = "0.1.7"
 dependencies = [
  "base64",
  "clap",
