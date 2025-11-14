@@ -1,18 +1,23 @@
+#![windows_subsystem = "windows"]
+
 #[macro_use]
 extern crate rocket;
+extern crate os_type;
 
-use base64;
+use base64::{engine::general_purpose, Engine as _};
+use clap::Parser;
 use cryptoki::context::{CInitializeArgs, Pkcs11};
 use cryptoki::object::{Attribute, AttributeType, ObjectClass};
+use cryptoki::session::Session;
 use rocket::fairing::{Fairing, Info, Kind};
 use rocket::http::Header;
 use rocket::response::content;
+use rocket::response::status::NotFound;
 use rocket::{Request, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::str;
-use rocket::response::status::NotFound;
 
 pub struct CORS;
 
@@ -36,9 +41,18 @@ impl Fairing for CORS {
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Address to listen on
+    #[arg(long, default_value = "127.0.0.1")]
+    address: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Person {
     national_number: String,
+    card_number: String,
     surname: String,
     firstnames: String,
     date_of_birth: String,
@@ -47,6 +61,58 @@ struct Person {
     address_zip: String,
     address_municipality: String,
     photo: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct InputToSign {
+    data: String,
+}
+
+fn get_pkcs11() -> Pkcs11 {
+    let pkcs11 = match os_type::current_platform().os_type {
+        os_type::OSType::Ubuntu => Pkcs11::new(
+            env::var("PKCS11_SOFTHSM2_MODULE")
+                .unwrap_or_else(|_| r"/usr/lib/x86_64-linux-gnu/libbeidpkcs11.so.0".to_string()),
+        )
+        .unwrap(),
+        os_type::OSType::OSX => {
+            Pkcs11::new(env::var("PKCS11_SOFTHSM2_MODULE").unwrap_or_else(|_| {
+                r"/Library/Belgium Identity Card/Pkcs11/libbeidpkcs11.dylib".to_string()
+            }))
+            .unwrap()
+        }
+        _ => Pkcs11::new(
+            env::var("PKCS11_SOFTHSM2_MODULE")
+                .unwrap_or_else(|_| r"C:\\Windows\System32\beidpkcs11.dll".to_string()),
+        )
+        .unwrap(),
+    };
+
+    // initialize the library
+    if !pkcs11.is_initialized() {
+        pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
+    }
+    pkcs11
+}
+
+fn get_session() -> Result<Session, NotFound<String>> {
+    let pkcs11 = get_pkcs11();
+    // find a slot, get the first one
+    let mut slots = pkcs11.get_slots_with_token().unwrap();
+
+    if slots.is_empty() {
+        return Err(NotFound(String::from("Geen eID ingevoerd.")));
+    };
+    let slot = slots.remove(0);
+
+    match pkcs11.open_ro_session(slot) {
+        Ok(session) => return Ok(session),
+        Err(_session) => {
+            return Err(NotFound(String::from(
+                "Ongeldige eID of eID niet correct ingevoerd.",
+            )))
+        }
+    };
 }
 
 fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
@@ -60,28 +126,16 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         "surname",
         "national_number",
         "PHOTO_FILE",
+        "card_number"
     ];
-    let mut pkcs11 = Pkcs11::new(
-        env::var("PKCS11_SOFTHSM2_MODULE")
-            .unwrap_or_else(|_| r"C:\\Windows\System32\beidpkcs11.dll".to_string()),
-    )
-    .unwrap();
-    // initialize the library
-    if !pkcs11.is_initialized() {
-        pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
-    }
 
-    // find a slot, get the first one
-    let mut slots = pkcs11.get_slots_with_token().unwrap();
-
-    if slots.is_empty()
-    {
-        return Err(NotFound(String::from("Geen eID ingevoerd.")))
-    };
-    let slot = slots.remove(0);
-    let session = match pkcs11.open_ro_session(slot){
+    let session = match get_session() {
         Ok(session) => session,
-        Err(_session) => return Err(NotFound(String::from("Ongeldige eID of eID niet correct ingevoerd.")))
+        Err(_session) => {
+            return Err(NotFound(String::from(
+                "Ongeldige eID of eID niet correct ingevoerd.",
+            )))
+        }
     };
 
     // pub key template
@@ -99,6 +153,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
             .unwrap();
         let mut label = String::new();
         let mut content: Vec<u8> = Vec::new();
+        // Print attribute labe
         for attr in attributes {
             if let Attribute::Label(value) = attr {
                 label = match str::from_utf8(&value) {
@@ -111,7 +166,7 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
         }
         if attrs_to_fetch.iter().any(|e| label.contains(e)) {
             if label.contains("PHOTO_FILE") {
-                person_hash.insert(label, base64::encode(content));
+                person_hash.insert(label, general_purpose::STANDARD.encode(content));
             } else {
                 match str::from_utf8(&content) {
                     Ok(v) => person_hash.insert(label, v.to_string()),
@@ -124,6 +179,10 @@ fn eid() -> Result<content::RawJson<String>, NotFound<String>> {
     let person = Person {
         national_number: person_hash
             .entry(String::from("national_number"))
+            .or_default()
+            .to_string(),
+        card_number: person_hash
+            .entry(String::from("card_number"))
             .or_default()
             .to_string(),
         surname: person_hash
@@ -174,10 +233,12 @@ fn get_healthz() -> content::RawJson<&'static str> {
 
 #[launch]
 fn rocket() -> _ {
+    let args = Args::parse();
+    
     let figment = rocket::Config::figment()
-    .merge(("port", 8099))
-    .merge(("address", "0.0.0.0"))
-    .merge(("log_level", "debug"));
+        .merge(("port", 8099))
+        .merge(("address", args.address))
+        .merge(("log_level", "debug"));
 
     rocket::custom(figment)
         .mount("/", routes![get_eid, get_healthz])

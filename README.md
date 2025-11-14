@@ -1,4 +1,4 @@
-Rust program that runs a small webserver for reading Belgian eID non-protected information.  
+eIDReader - A program that runs a small webserver for reading Belgian eID non-protected information.  
 The program will run a small webserver on http://localhost:8099/eid, exposing a json with the following fields:
     - national_number
     - surname
@@ -11,3 +11,10 @@ The program will run a small webserver on http://localhost:8099/eid, exposing a 
     - photo (base64 encoded)
 
 This endpoint can be used by a Javascript application to integrate eID reading in a web app.
+
+# MacOs install 
+Install .pkg file
+Afterwards run
+eidreader-setup-user-service
+
+in terminal
